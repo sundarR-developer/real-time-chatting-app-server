@@ -12,17 +12,36 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
-// Socket.io configuration
+// CORS Configuration - UPDATED
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://wondrous-macaron-0d4ee2.netlify.app",
+  "https://classy-cajeta-cac797.netlify.app",
+  process.env.CLIENT_URL
+].filter(Boolean);
+
+// Socket.io configuration - UPDATED
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
-    methods: ["GET", "POST"]
+    origin: allowedOrigins,
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
-// Middleware
+// Middleware - UPDATED
 app.use(cors({
-  origin: process.env.CLIENT_URL || "http://localhost:5173",
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('🚫 Blocked by CORS:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true
 }));
 app.use(express.json());
