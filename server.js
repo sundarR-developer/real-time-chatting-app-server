@@ -27,13 +27,27 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/chat-app', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(() => console.log('✅ MongoDB connected successfully'))
-.catch(err => console.log('❌ MongoDB connection error:', err));
+// MongoDB Connection (FIXED - removed deprecated options)
+const connectDB = async () => {
+  try {
+    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/chat-app');
+    console.log('✅ MongoDB connected successfully');
+  } catch (error) {
+    console.error('❌ MongoDB connection error:', error);
+    process.exit(1);
+  }
+};
+
+connectDB();
+
+// MongoDB connection events
+mongoose.connection.on('connected', () => {
+  console.log('✅ Mongoose connected to MongoDB cluster');
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error('❌ Mongoose connection error:', err);
+});
 
 // User Schema
 const userSchema = new mongoose.Schema({
@@ -140,13 +154,85 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Routes
+// ==================== ROUTES ====================
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
+// Root route - ADDED
+app.get('/', (req, res) => {
   res.json({ 
+    success: true,
+    message: 'Real Time Chat App Backend Server is running!',
+    service: 'Chat Application API',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      health: '/api/health',
+      api: '/api',
+      register: 'POST /api/register',
+      login: 'POST /api/login',
+      documentation: 'Check README for complete API documentation'
+    }
+  });
+});
+
+// API base route - ADDED
+app.get('/api', (req, res) => {
+  res.json({ 
+    success: true,
+    message: 'Chat App API is working!',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    available_endpoints: {
+      auth: {
+        register: 'POST /api/register',
+        login: 'POST /api/login',
+        logout: 'POST /api/logout'
+      },
+      users: 'GET /api/users',
+      messages: 'GET /api/messages/:user1/:user2',
+      friends: {
+        send_request: 'POST /api/friends/send-request',
+        accept_request: 'POST /api/friends/accept-request',
+        reject_request: 'POST /api/friends/reject-request',
+        requests: 'GET /api/friends/requests',
+        list: 'GET /api/friends/list',
+        remove: 'DELETE /api/friends/remove/:friendId'
+      },
+      notifications: {
+        list: 'GET /api/notifications',
+        mark_read: 'PUT /api/notifications/:notificationId/read',
+        mark_all_read: 'PUT /api/notifications/read-all',
+        delete: 'DELETE /api/notifications/:notificationId',
+        clear_all: 'DELETE /api/notifications'
+      },
+      health: 'GET /api/health'
+    }
+  });
+});
+
+// Health check endpoint - ENHANCED
+app.get('/api/health', (req, res) => {
+  const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
+  const dbStatusText = {
+    0: 'Disconnected',
+    1: 'Connected',
+    2: 'Connecting',
+    3: 'Disconnecting'
+  }[mongoose.connection.readyState];
+  
+  res.json({ 
+    success: true,
     status: 'OK', 
-    message: 'Chat server is running',
+    message: 'Chat server is running healthy',
+    database: {
+      status: dbStatus,
+      statusText: dbStatusText,
+      connection: mongoose.connection.readyState === 1 ? 'Healthy' : 'Unhealthy'
+    },
+    server: {
+      environment: process.env.NODE_ENV || 'development',
+      port: process.env.PORT || 5000,
+      uptime: `${process.uptime().toFixed(2)} seconds`
+    },
     timestamp: new Date().toISOString()
   });
 });
@@ -160,6 +246,7 @@ app.post('/api/register', async (req, res) => {
 
     if (!username || !email || !password) {
       return res.status(400).json({ 
+        success: false,
         error: 'Username, email, and password are required' 
       });
     }
@@ -171,6 +258,7 @@ app.post('/api/register', async (req, res) => {
     
     if (existingUser) {
       return res.status(400).json({ 
+        success: false,
         error: 'User with this email or username already exists' 
       });
     }
@@ -197,6 +285,7 @@ app.post('/api/register', async (req, res) => {
     console.log('User registered successfully:', user.username);
     
     res.status(201).json({ 
+      success: true,
       message: 'User created successfully', 
       user: { 
         id: user._id, 
@@ -208,6 +297,7 @@ app.post('/api/register', async (req, res) => {
   } catch (error) {
     console.error('Registration error:', error);
     res.status(500).json({ 
+      success: false,
       error: 'Internal server error during registration' 
     });
   }
@@ -221,13 +311,19 @@ app.post('/api/login', async (req, res) => {
     // Find user
     const user = await User.findOne({ email });
     if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ 
+        success: false,
+        error: 'Invalid email or password' 
+      });
     }
 
     // Check password
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ 
+        success: false,
+        error: 'Invalid email or password' 
+      });
     }
 
     // Update online status
@@ -242,6 +338,7 @@ app.post('/api/login', async (req, res) => {
     );
 
     res.json({ 
+      success: true,
       message: 'Login successful', 
       user: { 
         id: user._id, 
@@ -253,7 +350,10 @@ app.post('/api/login', async (req, res) => {
     });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Internal server error during login' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Internal server error during login' 
+    });
   }
 });
 
@@ -264,10 +364,16 @@ app.get('/api/users', authenticateToken, async (req, res) => {
       { _id: { $ne: req.user.userId } }
     ).select('username email isOnline lastSeen createdAt');
     
-    res.json(users);
+    res.json({
+      success: true,
+      users
+    });
   } catch (error) {
     console.error('Get users error:', error);
-    res.status(500).json({ error: 'Failed to fetch users' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch users' 
+    });
   }
 });
 
@@ -286,10 +392,16 @@ app.get('/api/messages/:user1/:user2', authenticateToken, async (req, res) => {
     .populate('receiver', 'username')
     .sort({ timestamp: 1 });
     
-    res.json(messages);
+    res.json({
+      success: true,
+      messages
+    });
   } catch (error) {
     console.error('Get messages error:', error);
-    res.status(500).json({ error: 'Failed to fetch messages' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch messages' 
+    });
   }
 });
 
@@ -300,10 +412,16 @@ app.post('/api/logout', authenticateToken, async (req, res) => {
       isOnline: false,
       lastSeen: new Date()
     });
-    res.json({ message: 'Logout successful' });
+    res.json({ 
+      success: true,
+      message: 'Logout successful' 
+    });
   } catch (error) {
     console.error('Logout error:', error);
-    res.status(500).json({ error: 'Logout failed' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Logout failed' 
+    });
   }
 });
 
@@ -316,7 +434,10 @@ app.post('/api/friends/send-request', authenticateToken, async (req, res) => {
     
     const toUser = await User.findById(toUserId);
     if (!toUser) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
     }
 
     // Check if request already exists
@@ -325,7 +446,10 @@ app.post('/api/friends/send-request', authenticateToken, async (req, res) => {
     );
 
     if (existingRequest) {
-      return res.status(400).json({ error: 'Friend request already sent' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Friend request already sent' 
+      });
     }
 
     // Check if already friends
@@ -335,7 +459,10 @@ app.post('/api/friends/send-request', authenticateToken, async (req, res) => {
     );
 
     if (existingFriend) {
-      return res.status(400).json({ error: 'Already friends with this user' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Already friends with this user' 
+      });
     }
 
     // Add friend request to recipient
@@ -361,10 +488,16 @@ app.post('/api/friends/send-request', authenticateToken, async (req, res) => {
       message: `${req.user.username} sent you a friend request`
     });
 
-    res.json({ message: 'Friend request sent successfully' });
+    res.json({ 
+      success: true,
+      message: 'Friend request sent successfully' 
+    });
   } catch (error) {
     console.error('Send friend request error:', error);
-    res.status(500).json({ error: 'Failed to send friend request' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to send friend request' 
+    });
   }
 });
 
@@ -381,7 +514,10 @@ app.post('/api/friends/accept-request', authenticateToken, async (req, res) => {
     );
 
     if (!friendRequest) {
-      return res.status(404).json({ error: 'Friend request not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Friend request not found' 
+      });
     }
 
     // Update request status
@@ -422,10 +558,16 @@ app.post('/api/friends/accept-request', authenticateToken, async (req, res) => {
       message: `${req.user.username} accepted your friend request`
     });
 
-    res.json({ message: 'Friend request accepted successfully' });
+    res.json({ 
+      success: true,
+      message: 'Friend request accepted successfully' 
+    });
   } catch (error) {
     console.error('Accept friend request error:', error);
-    res.status(500).json({ error: 'Failed to accept friend request' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to accept friend request' 
+    });
   }
 });
 
@@ -443,10 +585,16 @@ app.post('/api/friends/reject-request', authenticateToken, async (req, res) => {
 
     await currentUser.save();
 
-    res.json({ message: 'Friend request rejected successfully' });
+    res.json({ 
+      success: true,
+      message: 'Friend request rejected successfully' 
+    });
   } catch (error) {
     console.error('Reject friend request error:', error);
-    res.status(500).json({ error: 'Failed to reject friend request' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to reject friend request' 
+    });
   }
 });
 
@@ -457,10 +605,16 @@ app.get('/api/friends/requests', authenticateToken, async (req, res) => {
       .populate('friendRequests.from', 'username email')
       .select('friendRequests');
 
-    res.json({ friendRequests: user.friendRequests });
+    res.json({ 
+      success: true,
+      friendRequests: user.friendRequests 
+    });
   } catch (error) {
     console.error('Get friend requests error:', error);
-    res.status(500).json({ error: 'Failed to get friend requests' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to get friend requests' 
+    });
   }
 });
 
@@ -473,10 +627,16 @@ app.get('/api/friends/list', authenticateToken, async (req, res) => {
 
     const friends = user.friends.filter(friend => friend.status === 'accepted');
     
-    res.json({ friends });
+    res.json({ 
+      success: true,
+      friends 
+    });
   } catch (error) {
     console.error('Get friends list error:', error);
-    res.status(500).json({ error: 'Failed to get friends list' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to get friends list' 
+    });
   }
 });
 
@@ -501,10 +661,16 @@ app.delete('/api/friends/remove/:friendId', authenticateToken, async (req, res) 
     await currentUser.save();
     await friendUser.save();
 
-    res.json({ message: 'Friend removed successfully' });
+    res.json({ 
+      success: true,
+      message: 'Friend removed successfully' 
+    });
   } catch (error) {
     console.error('Remove friend error:', error);
-    res.status(500).json({ error: 'Failed to remove friend' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to remove friend' 
+    });
   }
 });
 
@@ -517,10 +683,16 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
       .populate('notifications.from', 'username')
       .select('notifications');
 
-    res.json({ notifications: user.notifications });
+    res.json({ 
+      success: true,
+      notifications: user.notifications 
+    });
   } catch (error) {
     console.error('Get notifications error:', error);
-    res.status(500).json({ error: 'Failed to get notifications' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to get notifications' 
+    });
   }
 });
 
@@ -537,10 +709,16 @@ app.put('/api/notifications/:notificationId/read', authenticateToken, async (req
       await user.save();
     }
 
-    res.json({ message: 'Notification marked as read' });
+    res.json({ 
+      success: true,
+      message: 'Notification marked as read' 
+    });
   } catch (error) {
     console.error('Mark notification read error:', error);
-    res.status(500).json({ error: 'Failed to mark notification as read' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to mark notification as read' 
+    });
   }
 });
 
@@ -553,10 +731,16 @@ app.put('/api/notifications/read-all', authenticateToken, async (req, res) => {
     });
     await user.save();
 
-    res.json({ message: 'All notifications marked as read' });
+    res.json({ 
+      success: true,
+      message: 'All notifications marked as read' 
+    });
   } catch (error) {
     console.error('Mark all notifications read error:', error);
-    res.status(500).json({ error: 'Failed to mark all notifications as read' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to mark all notifications as read' 
+    });
   }
 });
 
@@ -571,10 +755,16 @@ app.delete('/api/notifications/:notificationId', authenticateToken, async (req, 
     );
     await user.save();
 
-    res.json({ message: 'Notification deleted successfully' });
+    res.json({ 
+      success: true,
+      message: 'Notification deleted successfully' 
+    });
   } catch (error) {
     console.error('Delete notification error:', error);
-    res.status(500).json({ error: 'Failed to delete notification' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to delete notification' 
+    });
   }
 });
 
@@ -585,10 +775,16 @@ app.delete('/api/notifications', authenticateToken, async (req, res) => {
       $set: { notifications: [] }
     });
 
-    res.json({ message: 'All notifications cleared' });
+    res.json({ 
+      success: true,
+      message: 'All notifications cleared' 
+    });
   } catch (error) {
     console.error('Clear all notifications error:', error);
-    res.status(500).json({ error: 'Failed to clear notifications' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to clear notifications' 
+    });
   }
 });
 
@@ -674,16 +870,81 @@ io.on('connection', (socket) => {
   });
 });
 
-// Handle 404 for API routes
+// 404 handler for undefined API routes
 app.use('/api/*', (req, res) => {
-  res.status(404).json({ error: 'API route not found' });
+  res.status(404).json({ 
+    success: false,
+    error: 'API route not found',
+    requestedUrl: req.originalUrl,
+    availableEndpoints: {
+      root: 'GET /',
+      api: 'GET /api',
+      health: 'GET /api/health',
+      auth: ['POST /api/register', 'POST /api/login', 'POST /api/logout']
+    }
+  });
+});
+
+// Global error handling middleware
+app.use((error, req, res, next) => {
+  console.error('Server Error:', error);
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'production' ? 'Something went wrong!' : error.message
+  });
 });
 
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log('\n' + '='.repeat(60));
+  console.log('🚀 Real Time Chat App Server Started Successfully');
+  console.log('='.repeat(60));
+  console.log(`📍 Server running on port: ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🗄️ Database: ${mongoose.connection.readyState === 1 ? 'Connected ✅' : 'Disconnected ❌'}`);
+  console.log(`🔗 Root URL: http://localhost:${PORT}/`);
   console.log(`🔗 API URL: http://localhost:${PORT}/api`);
-  console.log(`❤️  Health check: http://localhost:${PORT}/api/health`);
+  console.log(`❤️ Health check: http://localhost:${PORT}/api/health`);
+  console.log('='.repeat(60));
+  console.log('Your chat service is live and ready! 💮\n');
 });
+
+// Graceful shutdown handling
+const gracefulShutdown = () => {
+  console.log('\n⚠️ Received shutdown signal, closing server gracefully...');
+  
+  server.close(() => {
+    console.log('✅ HTTP server closed');
+    
+    mongoose.connection.close(false, () => {
+      console.log('✅ MongoDB connection closed');
+      console.log('👋 Server shutdown completed');
+      process.exit(0);
+    });
+  });
+
+  // Force close after 10 seconds
+  setTimeout(() => {
+    console.error('❌ Could not close connections in time, forcefully shutting down');
+    process.exit(1);
+  }, 10000);
+};
+
+// Handle different shutdown signals
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+
+export default app;
