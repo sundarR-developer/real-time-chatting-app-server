@@ -16,7 +16,8 @@ const server = http.createServer(app);
 const allowedOrigins = [
   "http://localhost:5173",
   "https://wondrous-macaron-0d4ee2.netlify.app",
-  "https://classy-cajeta-cac797.netlify.app",
+    "https://classy-cajeta-cac797.netlify.app",
+ "https://incredible-heliotrope-c840e6.netlify.app",
   process.env.CLIENT_URL
 ].filter(Boolean);
 
