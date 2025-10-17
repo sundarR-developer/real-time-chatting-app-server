@@ -161,19 +161,23 @@ const messageSchema = new mongoose.Schema({
 const User = mongoose.model('User', userSchema);
 const Message = mongoose.model('Message', messageSchema);
 
-// Authentication Middleware
+// Authentication Middleware - ENHANCED
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
+    console.log('No token provided');
     return res.status(401).json({ error: 'Access token required' });
   }
 
   jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret', (err, user) => {
     if (err) {
+      console.log('Token verification failed:', err);
       return res.status(403).json({ error: 'Invalid token' });
     }
+    
+    console.log('Token verified for user:', user);
     req.user = user;
     next();
   });
@@ -540,25 +544,61 @@ app.post('/api/logout', authenticateToken, async (req, res) => {
 
 // Friend Routes
 
-// Send friend request
+// Send friend request - FIXED VERSION
 app.post('/api/friends/send-request', authenticateToken, async (req, res) => {
   try {
+    console.log('Friend request received:', {
+      fromUserId: req.user?.userId,
+      fromUsername: req.user?.username,
+      body: req.body
+    });
+
+    // Check if user is authenticated
+    if (!req.user || !req.user.userId) {
+      console.log('User not authenticated in friend request');
+      return res.status(401).json({ 
+        success: false,
+        error: 'Authentication required' 
+      });
+    }
+
     const { toUserId } = req.body;
-    
+
+    if (!toUserId) {
+      console.log('Missing toUserId');
+      return res.status(400).json({ 
+        success: false,
+        error: 'toUserId is required' 
+      });
+    }
+
+    // Validate toUserId format
+    if (!mongoose.Types.ObjectId.isValid(toUserId)) {
+      console.log('Invalid toUserId format:', toUserId);
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid user ID format' 
+      });
+    }
+
     const toUser = await User.findById(toUserId);
     if (!toUser) {
+      console.log('toUser not found:', toUserId);
       return res.status(404).json({ 
         success: false,
         error: 'User not found' 
       });
     }
 
-    // Check if request already exists
+    console.log('Found toUser:', toUser.username);
+
+    // Check if request already exists - FIXED: Use requestItem instead of req
     const existingRequest = toUser.friendRequests.find(
-      req => req.from.toString() === req.user.userId && req.status === 'pending'
+      requestItem => requestItem.from.toString() === req.user.userId && requestItem.status === 'pending'
     );
 
     if (existingRequest) {
+      console.log('Friend request already exists');
       return res.status(400).json({ 
         success: false,
         error: 'Friend request already sent' 
@@ -567,11 +607,20 @@ app.post('/api/friends/send-request', authenticateToken, async (req, res) => {
 
     // Check if already friends
     const currentUser = await User.findById(req.user.userId);
+    if (!currentUser) {
+      console.log('Current user not found:', req.user.userId);
+      return res.status(404).json({ 
+        success: false,
+        error: 'Current user not found' 
+      });
+    }
+
     const existingFriend = currentUser.friends.find(
       friend => friend.user.toString() === toUserId && friend.status === 'accepted'
     );
 
     if (existingFriend) {
+      console.log('Already friends with user');
       return res.status(400).json({ 
         success: false,
         error: 'Already friends with this user' 
@@ -601,15 +650,18 @@ app.post('/api/friends/send-request', authenticateToken, async (req, res) => {
       message: `${req.user.username} sent you a friend request`
     });
 
+    console.log('Friend request sent successfully');
     res.json({ 
       success: true,
       message: 'Friend request sent successfully' 
     });
   } catch (error) {
-    console.error('Send friend request error:', error);
+    console.error('Send friend request error DETAILS:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({ 
       success: false,
-      error: 'Failed to send friend request' 
+      error: 'Failed to send friend request',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -623,7 +675,7 @@ app.post('/api/friends/accept-request', authenticateToken, async (req, res) => {
     
     // Find the friend request
     const friendRequest = currentUser.friendRequests.find(
-      req => req.from.toString() === fromUserId && req.status === 'pending'
+      requestItem => requestItem.from.toString() === fromUserId && requestItem.status === 'pending'
     );
 
     if (!friendRequest) {
@@ -650,7 +702,7 @@ app.post('/api/friends/accept-request', authenticateToken, async (req, res) => {
 
     // Remove from pending requests
     currentUser.friendRequests = currentUser.friendRequests.filter(
-      req => !(req.from.toString() === fromUserId && req.status === 'pending')
+      requestItem => !(requestItem.from.toString() === fromUserId && requestItem.status === 'pending')
     );
 
     // Add notification to requester
@@ -693,7 +745,7 @@ app.post('/api/friends/reject-request', authenticateToken, async (req, res) => {
     
     // Remove the friend request
     currentUser.friendRequests = currentUser.friendRequests.filter(
-      req => !(req.from.toString() === fromUserId && req.status === 'pending')
+      requestItem => !(requestItem.from.toString() === fromUserId && requestItem.status === 'pending')
     );
 
     await currentUser.save();
