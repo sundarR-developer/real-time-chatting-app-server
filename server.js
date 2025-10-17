@@ -16,8 +16,8 @@ const server = http.createServer(app);
 const allowedOrigins = [
   "http://localhost:5173",
   "https://wondrous-macaron-0d4ee2.netlify.app",
-    "https://classy-cajeta-cac797.netlify.app",
- "https://incredible-heliotrope-c840e6.netlify.app",
+  "https://classy-cajeta-cac797.netlify.app",
+  "https://incredible-heliotrope-c840e6.netlify.app",
   process.env.CLIENT_URL
 ].filter(Boolean);
 
@@ -126,7 +126,7 @@ const userSchema = new mongoose.Schema({
   timestamps: true 
 });
 
-// Message Schema
+// Message Schema - UPDATED with messageType
 const messageSchema = new mongoose.Schema({
   sender: { 
     type: mongoose.Schema.Types.ObjectId, 
@@ -142,6 +142,11 @@ const messageSchema = new mongoose.Schema({
     type: String, 
     required: true,
     maxlength: 1000
+  },
+  messageType: {
+    type: String,
+    enum: ['text', 'image', 'file'],
+    default: 'text'
   },
   timestamp: { 
     type: Date, 
@@ -208,7 +213,10 @@ app.get('/api', (req, res) => {
         logout: 'POST /api/logout'
       },
       users: 'GET /api/users',
-      messages: 'GET /api/messages/:user1/:user2',
+      messages: {
+        send: 'POST /api/messages/send',
+        get: 'GET /api/messages/:user1/:user2'
+      },
       friends: {
         send_request: 'POST /api/friends/send-request',
         accept_request: 'POST /api/friends/accept-request',
@@ -421,6 +429,91 @@ app.get('/api/messages/:user1/:user2', authenticateToken, async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: 'Failed to fetch messages' 
+    });
+  }
+});
+
+// Send message endpoint - ADDED
+app.post('/api/messages/send', authenticateToken, async (req, res) => {
+  try {
+    const { receiver, message, messageType = 'text' } = req.body;
+
+    if (!receiver || !message) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Receiver and message are required' 
+      });
+    }
+
+    // Check if users are friends
+    const senderUser = await User.findById(req.user.userId);
+    const receiverUser = await User.findById(receiver);
+
+    if (!receiverUser) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Receiver user not found' 
+      });
+    }
+
+    const isFriend = senderUser.friends.some(
+      friend => friend.user.toString() === receiver && friend.status === 'accepted'
+    );
+
+    if (!isFriend) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'You can only send messages to friends. Send a friend request first.' 
+      });
+    }
+
+    // Create and save message
+    const newMessage = new Message({ 
+      sender: req.user.userId, 
+      receiver, 
+      message,
+      messageType,
+      timestamp: new Date()
+    });
+    
+    await newMessage.save();
+    
+    // Populate sender/receiver info
+    await newMessage.populate('sender', 'username email isOnline');
+    await newMessage.populate('receiver', 'username email isOnline');
+
+    // Create notification for receiver
+    receiverUser.notifications.push({
+      type: 'message',
+      from: req.user.userId,
+      message: `New message from ${senderUser.username}`,
+      read: false
+    });
+    await receiverUser.save();
+
+    // Emit notification via socket
+    io.emit('new_notification', {
+      userId: receiver,
+      type: 'message',
+      message: `New message from ${senderUser.username}`
+    });
+
+    // Emit the message via socket for real-time delivery
+    io.emit('receive_message', newMessage);
+
+    console.log(`💬 Message saved from ${senderUser.username} to ${receiverUser.username}`);
+
+    res.json({ 
+      success: true,
+      message: 'Message sent successfully',
+      data: newMessage
+    });
+    
+  } catch (error) {
+    console.error('Send message error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to send message' 
     });
   }
 });
@@ -808,7 +901,7 @@ app.delete('/api/notifications', authenticateToken, async (req, res) => {
   }
 });
 
-// Socket.io for real-time messaging
+// Socket.io for real-time messaging - UPDATED
 io.on('connection', (socket) => {
   console.log('🔗 User connected:', socket.id);
 
@@ -829,6 +922,13 @@ io.on('connection', (socket) => {
       const senderUser = await User.findById(sender);
       const receiverUser = await User.findById(receiver);
       
+      if (!senderUser || !receiverUser) {
+        socket.emit('message_error', { 
+          error: 'User not found' 
+        });
+        return;
+      }
+
       const isFriend = senderUser.friends.some(
         friend => friend.user.toString() === receiver && friend.status === 'accepted'
       );
@@ -840,10 +940,12 @@ io.on('connection', (socket) => {
         return;
       }
 
+      // Save message to database
       const newMessage = new Message({ 
         sender, 
         receiver, 
         message,
+        messageType: 'text', // Default for socket messages
         timestamp: new Date()
       });
       
@@ -872,17 +974,23 @@ io.on('connection', (socket) => {
       
       console.log(`💬 Message from ${senderUser.username} to ${receiverUser.username}`);
     } catch (error) {
-      console.error('Error saving message:', error);
+      console.error('Error saving message via socket:', error);
       socket.emit('message_error', { error: 'Failed to send message' });
     }
   });
 
   socket.on('typing_start', (data) => {
-    socket.broadcast.emit('user_typing', data);
+    socket.broadcast.emit('user_typing', {
+      ...data,
+      isTyping: true
+    });
   });
 
   socket.on('typing_stop', (data) => {
-    socket.broadcast.emit('user_stop_typing', data);
+    socket.broadcast.emit('user_typing', {
+      ...data,
+      isTyping: false
+    });
   });
 
   socket.on('disconnect', () => {
@@ -900,7 +1008,16 @@ app.use('/api/*', (req, res) => {
       root: 'GET /',
       api: 'GET /api',
       health: 'GET /api/health',
-      auth: ['POST /api/register', 'POST /api/login', 'POST /api/logout']
+      auth: ['POST /api/register', 'POST /api/login', 'POST /api/logout'],
+      messages: 'POST /api/messages/send',
+      users: 'GET /api/users',
+      friends: {
+        send_request: 'POST /api/friends/send-request',
+        accept_request: 'POST /api/friends/accept-request',
+        reject_request: 'POST /api/friends/reject-request',
+        requests: 'GET /api/friends/requests',
+        list: 'GET /api/friends/list'
+      }
     }
   });
 });
